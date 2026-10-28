@@ -105,7 +105,89 @@ final class Profile
         }
         $warnings[] = 'The profile is a user-supplied snapshot, not a guarantee of execution or import permissions.';
         $profile['warnings'] = $warnings;
+        $profile['_command_candidates'] = self::indexCandidates($profile);
         return $profile;
+    }
+
+    /** Build a per-name index once; never confuse PATH absence with tool absence. */
+    private static function indexCandidates(array $profile): array
+    {
+        $index = [];
+        $tests = [];
+        foreach (($profile['functional_tests']['results'] ?? []) as $test) {
+            if (($test['target'] ?? '') === 'runtime' && is_string($test['executable'] ?? null)) {
+                $tests[$test['executable']][] = $test;
+            }
+        }
+        $add = static function (string $name, array $entry, bool $inPath) use (&$index, $tests): void {
+            $display = $entry['path'] ?? null;
+            $path = $entry['invocation_path'] ?? null;
+            // Old profiles redact paths. Never invent an executable path from a placeholder.
+            if ($path === null && is_string($display) && str_starts_with($display, '/')
+                && !str_contains($display, '<')) $path = $display;
+            foreach (['path' => $display, 'invocation_path' => $path, 'resolved_path' => $entry['resolved_path'] ?? null] as $key => $value) {
+                if ($value !== null && (!is_string($value) || strlen($value) > 4096 || preg_match('/[\x00-\x1f]/', $value))) {
+                    throw new RuntimeException('Invalid executable path field: ' . $key);
+                }
+            }
+            if ($path !== null && !str_starts_with($path, '/')) $path = null;
+            $matched = $tests[$entry['resolved_path'] ?? $path ?? ''] ?? [];
+            $failures = array_values(array_filter($matched, static fn($t) => in_array($t['status'], ['failed', 'start_failed', 'timeout'], true)));
+            $passed = array_filter($matched, static fn($t) => $t['status'] === 'passed');
+            $state = $failures ? 'test_failed' : ($passed ? 'tested' : 'found_untested');
+            $reason = $failures ? ($failures[0]['reason'] ?? $failures[0]['status']) :
+                ($passed ? 'only_recorded_operation_passed' : ($matched[0]['reason'] ?? 'no_reviewed_test_for_this_path'));
+            if (!is_string($reason)) $reason = 'invalid_test_reason';
+            $index[strtolower($name)][] = ['path' => $display, 'invocation_path' => $path,
+                'resolved_path' => $entry['resolved_path'] ?? $path,
+                'in_path' => $inPath, 'invocable_by_name' => $inPath && ($entry['invocable_by_name'] ?? true),
+                'state' => $state, 'reason' => $reason, 'tests' => $matched];
+        };
+        foreach (($profile['commands'] ?? []) as $name => $entry) {
+            if (!($entry['available'] ?? false)) continue;
+            $candidates = $entry['candidates'] ?? [$entry];
+            if (!is_array($candidates) || !$candidates) throw new RuntimeException('Invalid executable candidates.');
+            foreach ($candidates as $candidate) {
+                if (!is_array($candidate)) throw new RuntimeException('Invalid executable candidate.');
+                $add($name, $candidate, true);
+            }
+        }
+        $outside = $profile['inventory']['executables_outside_path'] ?? [];
+        if (!is_array($outside)) throw new RuntimeException('Invalid off-PATH inventory.');
+        foreach ($outside as $entry) {
+            if (!is_array($entry) || !is_string($entry['name'] ?? null) || strlen($entry['name']) > 160) {
+                throw new RuntimeException('Invalid off-PATH executable.');
+            }
+            $add($entry['name'], $entry, false);
+        }
+        foreach ($tests as $path => $records) {
+            if (!str_starts_with($path, '/') || str_contains($path, '<')) continue;
+            $name = $records[0]['command'];
+            $existing = $index[strtolower($name)] ?? [];
+            if (!array_filter($existing, static fn($c) => $c['resolved_path'] === $path)) {
+                $add($name, ['path' => $path, 'invocation_path' => $path], false);
+            }
+        }
+        return $index;
+    }
+
+    /** Evidence about all candidates; tests apply only to the exact recorded file. */
+    public static function commandEvidence(array $profile, string $command): array
+    {
+        $index = $profile['_command_candidates'] ?? self::indexCandidates($profile);
+        $explicit = str_starts_with($command, '/');
+        $candidates = $explicit ? array_values(array_filter(array_merge([], ...array_values($index)),
+            static fn($c) => $c['invocation_path'] === $command || $c['resolved_path'] === $command)) : ($index[strtolower($command)] ?? []);
+        if (!$candidates) {
+            return ['status' => !$explicit && self::status($profile, $command) === 'missing' ? 'not_found' : 'unknown',
+                'candidates' => [], 'selection_required' => false];
+        }
+        // Prefer the actual PATH-selected binary. Alternative paths remain explicit choices.
+        $selected = array_values(array_filter($candidates, static fn($c) => $c['invocable_by_name']));
+        $states = array_column($selected ?: $candidates, 'state');
+        $state = $selected ? $selected[0]['state'] :
+            (in_array('tested', $states, true) ? 'tested' : (in_array('found_untested', $states, true) ? 'found_untested' : 'test_failed'));
+        return ['status' => $state, 'candidates' => $candidates, 'selection_required' => !$explicit && !$selected];
     }
 
     /** @param array<string,mixed> $profile */

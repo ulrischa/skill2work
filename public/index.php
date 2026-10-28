@@ -171,6 +171,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $labels = [
+    'not_found' => 'Not found in inventory',
+    'found_untested' => 'Found, untested',
+    'tested' => 'Test passed (limited scope)',
+    'test_failed' => 'Test failed',
     'observed' => 'Found in profile – functionality not guaranteed',
     'instructions-only' => 'No program execution detected',
     'unverified' => 'Not fully verified',
@@ -255,6 +259,18 @@ $labels = [
                             <div class="table-scroll"><table><thead><tr><th>Program</th><th>Evidence</th><th>Detected in</th></tr></thead><tbody>
                             <?php foreach ($report['commands'] as $command => $detail): ?><tr><td><code><?= escape_html($command) ?></code></td><td><span class="mini mini-<?= escape_html($detail['status']) ?>"><?= escape_html($labels[$detail['status']] ?? $detail['status']) ?></span></td><td><?= escape_html(implode(', ', $detail['sources'])) ?></td></tr><?php endforeach; ?>
                             </tbody></table></div>
+                        <?php endif; ?>
+                        <?php if ($report['commands']): ?>
+                            <details><summary>Invocation paths and test evidence</summary>
+                                <div class="table-scroll"><table><thead><tr><th>Program / path</th><th>State</th><th>Test or skip reason</th></tr></thead><tbody>
+                                <?php foreach ($report['commands'] as $command => $detail): ?>
+                                    <?php foreach ($detail['candidates'] as $candidate): ?>
+                                    <tr><td><strong><?= escape_html($command) ?></strong><br><code><?= escape_html($candidate['invocation_path'] ?? ('unrecorded; display: ' . ($candidate['path'] ?? 'unknown'))) ?></code><br><?= $candidate['in_path'] ? 'PATH' : 'outside PATH — explicit path review required' ?></td>
+                                    <td><?= escape_html($labels[$candidate['state']] ?? $candidate['state']) ?></td><td><?= escape_html($candidate['reason']) ?></td></tr>
+                                    <?php endforeach; ?>
+                                <?php endforeach; ?>
+                                </tbody></table></div>
+                            </details>
                         <?php endif; ?>
                         <?php if ($report['modules']): ?>
                             <details><summary>Python modules (<?= count($report['modules']) ?>)</summary><div class="table-scroll"><table><thead><tr><th>Module</th><th>Evidence</th><th>Detected in</th></tr></thead><tbody>

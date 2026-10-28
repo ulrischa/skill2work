@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from checks import atomic_json, functional_tests, positive_float, positive_int
+from checks import annotate_candidates, atomic_json, functional_tests, positive_float, positive_int
 
 SCHEMA = 2
 MAX_COMMANDS = 12000
@@ -118,8 +118,16 @@ def scan_commands():
         complete = complete and ok and reason is None
         for name in commands:
             key = name.lower()
+            candidate = {"name": name, "path": clean_path(folder / name),
+                         "invocation_path": str(folder / name), "resolved_path": os.path.realpath(folder / name),
+                         "invocable_by_name": key not in names, "state": "found_untested",
+                         "test_reason": "tests_not_run"}
             if key not in names:
-                names[key] = {"available": True, "evidence": "executable_in_PATH", "path": clean_path(folder / name)}
+                names[key] = {"available": True, "evidence": "executable_in_PATH",
+                              "path": clean_path(folder / name), "candidates": [],
+                              "state": "found_untested", "test_reason": "tests_not_run"}
+            if not any(c["invocation_path"] == candidate["invocation_path"] for c in names[key]["candidates"]):
+                names[key]["candidates"].append(candidate)
         if len(names) >= MAX_COMMANDS:
             complete = False
             break
@@ -280,10 +288,13 @@ def scan_additional_executables(known, deep=False, roots=None, max_dirs=MAX_SCAN
                             continue
                     except OSError:
                         continue
-                    if name.lower() not in known:
+                    known_paths = {c.get("invocation_path") for c in known.get(name.lower(), {}).get("candidates", [])}
+                    if entry.path not in known_paths:
                         path = clean_path(entry.path)
-                        off_path.setdefault((name, path), {"name": name, "path": path,
-                                                           "invocable_by_name": False})
+                        off_path.setdefault((name, entry.path), {"name": name, "path": path,
+                            "invocation_path": entry.path, "resolved_path": os.path.realpath(entry.path),
+                            "invocable_by_name": False, "state": "found_untested",
+                            "test_reason": "no_reviewed_test_for_this_path"})
         except OSError:
             inaccessible += 1
 
@@ -300,7 +311,7 @@ def scan_additional_executables(known, deep=False, roots=None, max_dirs=MAX_SCAN
         if state.get("identity") != identity:
             raise ValueError("Checkpoint belongs to a different runtime or scan scope")
         pending = state["pending"]
-        off_path = {(x["name"], x["path"]): x for x in state["executables"]}
+        off_path = {(x["name"], x.get("invocation_path", x["path"])): x for x in state["executables"]}
         manifests = state["manifests"]
         scanned = state["scanned"]
         inaccessible = state["inaccessible"]
@@ -724,7 +735,7 @@ def gather(deep_scan=False, options=None):
             "Installed binaries and package metadata do not establish successful execution, permissions or API access.",
             "Filesystem discovery is mount-aware and bounded. --deep-scan traverses accessible ordinary directories and mounts from /, without opening arbitrary file contents. Virtual kernel mounts and /run are inventoried via targeted metadata.",
             "Neither scan mode establishes complete program coverage: permissions, symlinks, executable-name filtering, virtual filesystems, mount access and limits may hide programs. A blocked I/O operation cannot always be interrupted by the scan timer.",
-            "Paths can be sensitive. Home directory names are redacted but extension names, package names and environment variable names may reveal information.",
+            "Paths can be sensitive. Display paths are redacted, but invocation_path, resolved_path and test executable fields retain exact paths for review and invocation.",
             "Variable values (except selected harmless locale settings) and file contents are not exported.",
             "The JSON is passed to ChatGPT when generated there; sharing is governed by ChatGPT's data handling and account settings.",
             "Tool/plugin visibility must be documented separately by the assistant; a Python process cannot discover all agent tools.",
@@ -732,11 +743,12 @@ def gather(deep_scan=False, options=None):
         ] + issues,
     }
     result["limitations"].extend(x for x in stage_issues if x not in result["limitations"])
-    result["probe_version"] = "1.5"
+    result["probe_version"] = "1.6"
     result["configuration"] = {key: value for key, value in options.items() if key not in ("destination", "checkpoint")}
     if destination:
         atomic_json(destination, result)
     result["functional_tests"] = functional_tests(options.get("test_timeout", 5), options.get("test_seconds", 120), options.get("python_modules", []), options.get("node_modules", []))
+    annotate_candidates(commands, extra, result["functional_tests"])
     return result
 
 

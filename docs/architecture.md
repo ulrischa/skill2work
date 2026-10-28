@@ -21,7 +21,7 @@ The supervisor starts a worker with a deadline. The worker writes partial JSON a
 
 `checks.py` supplies the common functional-test engine and reviewed runtime adapters. An adapter declares the command, target and expected result; the engine handles launch, deadlines, output and status. To add a runtime, review its executable resolution and test side effects, add a small deterministic adapter, and cover success/failure/timeouts. Never execute arbitrary discovered programs or import every package as an inventory shortcut.
 
-The interface distinguishes inventory availability from functional test evidence. Successful smoke tests establish only their recorded scope. The converter downgrades relevant failed/unverified evidence; it does not solve full package version constraints or every language's project module resolution.
+The profile parser builds a per-name candidate index from PATH, off-PATH and runtime-test records. `commandEvidence()` resolves discovery and exact-path baseline evidence for analysis; `status()` retains PATH-only availability semantics for backward compatibility. Tests of imported modules do not become baseline tests. The interface distinguishes inventory availability from functional test evidence. Successful smoke tests establish only their recorded scope. The converter downgrades relevant failed/unverified evidence; it does not solve full package version constraints or every language's project module resolution.
 
 ## Known boundaries
 

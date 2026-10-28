@@ -69,8 +69,8 @@ check(count($paths) === 2, 'discovers two skills');
 $result = Converter::convert($input, $paths[1], $profile);
 $report = $result['report'];
 check($report['skill'] === 'pretty-skill', 'normalizes name');
-check($report['commands']['python3']['status'] === 'available', 'python3 observed');
-check($report['commands']['ffmpeg']['status'] === 'missing', 'ffmpeg absent');
+check($report['commands']['python3']['status'] === 'found_untested', 'python3 observed');
+check($report['commands']['ffmpeg']['status'] === 'not_found', 'ffmpeg absent');
 check($report['modules']['requests']['status'] === 'missing', 'requests absent');
 check($report['overall'] === 'incompatible', 'missing dependency makes skill incompatible in snapshot');
 check(count($report['rewrites']) === 1, 'rewrites exact alias once');
@@ -110,7 +110,7 @@ check(str_contains(implode(' ', $v2_output['report']['warnings']), 'outside PATH
 check(str_contains($v2_output['archive']['pretty-skill/references/skill2work-compatibility.md'], 'Runtime inventory coverage'), 'v2 coverage added to report');
 $extended_shell = Analyzer::analyze(['SKILL.md' => "---\nname: a\ndescription: b\n---\n\n```bash\ncustom-automation --check\n```\n"], $v2_profile);
 check(isset($extended_shell['commands']['custom-automation']), 'detect previously unknown command from shell fence');
-check($extended_shell['commands']['custom-automation']['status'] === 'missing', 'cross-check novel command against complete PATH');
+check($extended_shell['commands']['custom-automation']['status'] === 'not_found', 'cross-check novel command against complete PATH');
 fails(fn() => Profile::parse(json_encode(array_merge($v2_data, ['coverage' => []]), JSON_THROW_ON_ERROR)), 'reject invalid v2 coverage');
 
 $plain = Converter::convert($input, $paths[0], Profile::parse(null));
@@ -210,4 +210,73 @@ check(str_contains($result['archive']['simple-migrate/SKILL.md'], 'Work task'), 
 check(count($result['report']['rewrites']) > 0, 'migration shown in output report');
 $unmapped = Converter::convert(['SKILL.md' => "---\nname: complex-migrate\ndescription: demo\n---\nRun `codex exec --output-schema schema.json \"Task\"`"], 'SKILL.md', Profile::parse(null));
 check(str_contains(implode(' ', $unmapped['report']['warnings']), 'Not converted automatically'), 'unsupported semantics shown in output');
+
+// Off-PATH candidates are evidence, not missing dependencies or universal test passes.
+$evidence_data = $v2_data;
+$evidence_data['coverage']['path_inventory_complete'] = true;
+$evidence_data['commands'] = [];
+$evidence_data['inventory']['executables_outside_path'] = [
+    ['name' => 'widget', 'path' => '/opt/widget', 'invocation_path' => '/opt/widget'],
+    ['name' => 'widget', 'path' => '/srv/widget', 'invocation_path' => '/srv/widget'],
+];
+$evidence_profile = Profile::parse(json_encode($evidence_data));
+$evidence = Profile::commandEvidence($evidence_profile, 'widget');
+check($evidence['status'] === 'found_untested' && count($evidence['candidates']) === 2, 'all off-PATH candidates count as found');
+check($evidence['selection_required'], 'off-PATH use requires explicit selection');
+$widget = ['SKILL.md' => "---\nname: widget-demo\ndescription: demo\n---\n```sh\nwidget --help\n```\n"];
+$converted_widget = Converter::convert($widget, 'SKILL.md', $evidence_profile);
+check($converted_widget['report']['overall'] === 'unverified', 'untested off-PATH tool is not incompatible');
+check(str_contains($converted_widget['archive']['widget-demo/references/skill2work-compatibility.md'], '/srv/widget'), 'report includes invocation paths');
+check(str_contains($converted_widget['archive']['widget-demo/SKILL.md'], 'a found tool may be invoked'), 'skill guidance permits reviewed tool invocation');
+check(Profile::commandEvidence($evidence_profile, 'absent')['status'] === 'not_found', 'negative evidence distinguishes not found');
+check(Profile::commandEvidence(Profile::parse(null), 'absent')['status'] === 'unknown', 'no profile is unknown, not absent');
+$evidence_data['functional_tests']['results'] = [
+    ['command' => 'widget', 'target' => 'runtime', 'scope' => 'arithmetic only', 'executable' => '/opt/widget', 'status' => 'passed'],
+];
+$evidence = Profile::commandEvidence(Profile::parse(json_encode($evidence_data)), 'widget');
+check($evidence['candidates'][0]['state'] === 'tested' && $evidence['candidates'][1]['state'] === 'found_untested', 'successful test applies only to exact path');
+$evidence_data['functional_tests']['results'][0]['status'] = 'failed';
+$evidence_data['functional_tests']['results'][0]['reason'] = 'nonzero_exit';
+$evidence = Profile::commandEvidence(Profile::parse(json_encode($evidence_data)), 'widget');
+check($evidence['candidates'][0]['state'] === 'test_failed' && $evidence['status'] === 'found_untested', 'failed candidate does not invalidate untested alternative');
+$evidence_data['commands']['widget'] = ['available' => true, 'path' => '/opt/widget'];
+$evidence = Profile::commandEvidence(Profile::parse(json_encode($evidence_data)), 'widget');
+check($evidence['status'] === 'test_failed', 'failed PATH selection cannot be hidden by alternate candidates');
+$evidence_data['functional_tests']['results'][0]['target'] = 'python:json';
+$evidence_data['functional_tests']['results'][0]['status'] = 'passed';
+check(Profile::commandEvidence(Profile::parse(json_encode($evidence_data)), 'widget')['status'] === 'found_untested', 'module import is not runtime baseline evidence');
+$evidence_data['inventory']['executables_outside_path'][0]['invocation_path'] = [1];
+fails(fn() => Profile::parse(json_encode($evidence_data)), 'reject invalid invocation path');
+
+
+$evidence_data['inventory']['executables_outside_path'][0]['invocation_path'] = '/opt/widget';
+$evidence_profile = Profile::parse(json_encode($evidence_data));
+check(!isset($converted_widget['report']['commands']['sh']), 'fence language is not an inline program call');
+$absolute = Analyzer::analyze(['SKILL.md' => "```sh\n/srv/widget --help\n```"], $evidence_profile);
+check($absolute['commands']['/srv/widget']['status'] === 'found_untested', 'absolute command path matches discovered candidate');
+check(!$absolute['commands']['/srv/widget']['selection_required'], 'explicit path does not require choosing another location');
+check(Profile::commandEvidence($evidence_profile, '/unscanned/widget')['status'] === 'unknown', 'PATH coverage cannot prove absolute path absence');
+$failed_data = $evidence_data;
+$failed_data['inventory']['executables_outside_path'] = [];
+$failed_data['functional_tests']['results'][0]['target'] = 'runtime';
+$failed_data['functional_tests']['results'][0]['status'] = 'timeout';
+$failed_profile = Profile::parse(json_encode($failed_data));
+$failed_result = Converter::convert($widget, 'SKILL.md', $failed_profile);
+check($failed_result['report']['commands']['widget']['status'] === 'test_failed', 'timeout is a failed test, not missing');
+check($failed_result['report']['overall'] === 'unverified', 'failed baseline does not claim universal incompatibility');
+$failed_data['functional_tests']['results'][0]['status'] = 'passed';
+$passed_result = Converter::convert($widget, 'SKILL.md', Profile::parse(json_encode($failed_data)));
+check($passed_result['report']['commands']['widget']['status'] === 'tested', 'exact baseline success displayed');
+check(str_contains($passed_result['archive']['widget-demo/SKILL.md'], 'not all features or the entire skill'), 'baseline success is explicitly scoped');
+$legacy = Profile::parse(json_encode(array_replace($v2_data, ['inventory' => ['executables_outside_path' => [['name' => 'widget', 'path' => '~/bin/widget']]]])));
+check(Profile::commandEvidence($legacy, 'widget')['candidates'][0]['invocation_path'] === null, 'legacy redacted paths are not invented');
+
+
+$alias_data = $v2_data;
+$alias_data['commands']['python3']['path'] = '/usr/bin/python3';
+$alias_data['coverage']['path_inventory_complete'] = true;
+$alias_data['functional_tests']['results'] = [['command' => 'python3', 'target' => 'runtime', 'scope' => 'baseline', 'status' => 'failed', 'executable' => '/usr/bin/python3']];
+$alias_result = Converter::convert(['SKILL.md' => "---\nname: alias-check\ndescription: demo\n---\nRun `python script.py`"], 'SKILL.md', Profile::parse(json_encode($alias_data)));
+check(str_contains($alias_result['archive']['alias-check/SKILL.md'], '`python script.py`'), 'failed alias target is not used for automatic rewriting');
+
 fwrite(STDOUT, "All $passed tests passed.\n");

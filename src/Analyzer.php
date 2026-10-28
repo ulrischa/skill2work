@@ -41,13 +41,13 @@ final class Analyzer
         $codeFiles = 0;
 
         $recordCommand = static function (string $command, string $source) use (&$commands): void {
-            $command = strtolower($command);
+            if (!str_starts_with($command, '/')) $command = strtolower($command);
             // Parse command positions rather than restricting detection to a fixed list.
             // Shell built-ins are not external executable dependencies.
             $builtins = ['cd','echo','export','set','unset','alias','source','read','exit','return',
                 'if','then','else','elif','fi','for','do','done','while','case','esac','function',
                 'local','declare','typeset','shift','trap','wait','break','continue','pwd'];
-            if (preg_match('/^[a-z][a-z0-9_.+@-]{0,127}$/', $command)
+            if ((preg_match('/^[a-z][a-z0-9_.+@-]{0,127}$/', $command) || preg_match('~^/[A-Za-z0-9_./+@-]+$~', $command))
                 && !in_array($command, $builtins, true)) {
                 $commands[$command][$source] = true;
             }
@@ -124,7 +124,7 @@ final class Analyzer
                         self::scanShell($block, $name . ' (code block)', $recordCommand);
                     }
                 }
-                if (preg_match_all('/`([A-Za-z][\w.+@-]{0,127}\s+(?:[-\w.\/]+\s*){1,12})`/i', $content, $matches)) {
+                if (preg_match_all('/(?<!`)`([A-Za-z\/][\w.\/+@-]{0,4095}\h+(?:[-\w.\/]+\h*){1,12})`(?!`)/i', $content, $matches)) {
                     foreach ($matches[1] as $command) {
                         self::scanShell($command, $name . ' (Inline)', $recordCommand);
                     }
@@ -181,7 +181,7 @@ final class Analyzer
 
         $commandResults = [];
         foreach ($commands as $command => $sources) {
-            $commandResults[$command] = ['status' => Profile::status($profile, $command), 'sources' => array_keys($sources)];
+            $commandResults[$command] = Profile::commandEvidence($profile, $command) + ['sources' => array_keys($sources)];
         }
         ksort($commandResults);
         $moduleResults = [];
@@ -193,9 +193,10 @@ final class Analyzer
         $packages = array_values(array_unique($packages));
         $statuses = array_merge(array_column($commandResults, 'status'), array_column($moduleResults, 'status'));
 
-        if (in_array('missing', $statuses, true)) {
+        if (in_array('missing', $statuses, true) || in_array('not_found', $statuses, true)) {
             $overall = 'incompatible';
-        } elseif (in_array('unknown', $statuses, true) || count($warnings) > 0 || count($packages) > 0) {
+        } elseif (count(array_intersect(['unknown', 'found_untested', 'test_failed'], $statuses)) > 0
+            || count(array_filter($commandResults, static fn($c) => $c['selection_required'])) > 0 || count($warnings) > 0 || count($packages) > 0) {
             $overall = 'unverified';
         } elseif (count($statuses) === 0 && $codeFiles === 0) {
             $overall = 'instructions-only';
@@ -230,7 +231,7 @@ final class Analyzer
             // Detect commands after pipes and separators, but never execute them.
             foreach (preg_split('/\s*(?:\|\||&&|[;|])\s*/', $line) ?: [] as $chunk) {
                 $chunk = preg_replace('/^(?:(?:[A-Za-z_]\w*=\S*|env)\s+)*/', '', trim($chunk));
-                if (preg_match('/^([A-Za-z][\w.+-]*)\b/', $chunk, $matches)) {
+                if (preg_match('~^([A-Za-z/][\w./+@-]*)(?=\s|$)~', $chunk, $matches)) {
                     $recordCommand($matches[1], $source);
                 }
             }

@@ -82,3 +82,70 @@ class FailureIsolationTests(unittest.TestCase):
                 result = probe.gather(options=options)
             self.assertIn('functional_tests', result)
             self.assertTrue(any('Extensions: PermissionError' in line for line in result['limitations']))
+
+class CandidateEvidenceTests(unittest.TestCase):
+    def test_exact_path_evidence_and_skip_reason(self):
+        commands = {'node': {'candidates': [{'resolved_path': '/usr/bin/node'}]}}
+        outside = [{'name': 'node', 'resolved_path': '/opt/other/node'}]
+        checks.annotate_candidates(commands, outside, {'results': [
+            {'command': 'node', 'target': 'runtime', 'executable': '/usr/bin/node', 'status': 'passed'}]})
+        self.assertEqual(commands['node']['state'], 'tested')
+        self.assertEqual(outside[0]['state'], 'found_untested')
+        self.assertEqual(outside[0]['test_reason'], 'no_reviewed_test_for_this_path')
+
+    def test_module_success_does_not_mark_runtime_tested(self):
+        outside = [{'name': 'python3', 'resolved_path': '/opt/python'}]
+        checks.annotate_candidates({}, outside, {'results': [
+            {'command': 'python3', 'target': 'python:json', 'executable': '/opt/python', 'status': 'passed'}]})
+        self.assertEqual(outside[0]['state'], 'found_untested')
+
+    def test_test_failure_is_not_absence(self):
+        outside = [{'name': 'node', 'resolved_path': '/opt/node'}]
+        checks.annotate_candidates({}, outside, {'results': [
+            {'command': 'node', 'target': 'runtime', 'executable': '/opt/node', 'status': 'failed', 'reason': 'nonzero_exit'}]})
+        self.assertEqual(outside[0]['state'], 'test_failed')
+        self.assertEqual(outside[0]['test_reason'], 'nonzero_exit')
+
+    def test_untrusted_runtime_is_recorded_but_not_executed(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as folder:
+            executable = Path(folder)/'node'
+            marker = Path(folder)/'executed'
+            executable.write_text('#!/bin/sh\ntouch ' + str(marker))
+            executable.chmod(0o755)
+            with patch.dict(os.environ, {'PATH': folder}):
+                tests = checks.functional_tests()
+            record = next(r for r in tests['results'] if r['command'] == 'node')
+            self.assertEqual(record['reason'], 'outside_trusted_roots')
+            self.assertEqual(record['state'], 'found_untested')
+            self.assertEqual(record['executable'], str(executable))
+            self.assertFalse(marker.exists())
+
+    def test_failure_has_structured_diagnostics(self):
+        failed = checks.run_check([sys.executable, '-c', 'exit(7)'], expected='ok')
+        self.assertEqual((failed['reason'], failed['exit_code']), ('nonzero_exit', 7))
+        missing = checks.run_check(['/nonexistent/s2w'])
+        self.assertEqual(missing['reason'], 'process_start_error')
+        self.assertEqual(missing['errno'], 2)
+
+    def test_off_path_duplicate_name_is_not_discarded(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root/'path').mkdir(); (root/'other').mkdir()
+            for part in ('path', 'other'):
+                p = root/part/'custom'
+                p.write_text('never execute'); p.chmod(0o755)
+            from unittest.mock import patch
+            with patch.dict(os.environ, {'PATH': str(root/'path')}):
+                commands, _, _ = probe.scan_commands()
+            outside, _, _, _ = probe.scan_additional_executables(commands, roots=[root], mounts=[])
+            self.assertEqual([e['invocation_path'] for e in outside], [str(root/'other'/'custom')])
+            self.assertEqual(commands['custom']['candidates'][0]['invocation_path'], str(root/'path'/'custom'))
+
+    def test_missing_adapter_runtime_has_explicit_absence_state(self):
+        from unittest.mock import patch
+        with patch.object(checks.shutil, 'which', return_value=None):
+            records = checks.functional_tests()['results']
+        node = next(r for r in records if r['command'] == 'node')
+        self.assertEqual(node['state'], 'not_found')
+        self.assertEqual(node['reason'], 'not_found_in_runtime_search')

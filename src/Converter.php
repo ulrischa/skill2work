@@ -107,7 +107,9 @@ final class Converter
         foreach (($profile['functional_tests']['results'] ?? []) as $test) {
             if (!is_array($test)) continue;
             $analysis['functional_evidence'][] = ($test['command'] ?? '?') . ' / ' . ($test['target'] ?? '?') .
-                ': ' . ($test['status'] ?? 'unknown') . ' (' . ($test['scope'] ?? 'unknown scope') . ')';
+                ': ' . ($test['status'] ?? 'unknown') . ' (' . ($test['scope'] ?? 'unknown scope') . '); executable=' . ($test['executable'] ?? 'unrecorded') .
+                '; reason=' . ($test['reason'] ?? 'none') . '; exit=' . ($test['exit_code'] ?? 'none') .
+                '; error=' . ($test['error_type'] ?? 'none') . '; errno=' . ($test['errno'] ?? 'none');
         }
         if (!$analysis['functional_evidence']) $analysis['functional_evidence'][] = 'No functional tests in the profile.';
         foreach (($profile['functional_tests']['results'] ?? []) as $test) {
@@ -131,20 +133,9 @@ final class Converter
         $analysis['profile_timestamp'] = $profile['timestamp'] ?? null;
         $analysis['profile_warnings'] = $profile['warnings'] ?? [];
         $analysis['profile_inventory'] = self::profileInventorySummary($profile);
-        if (($profile['schema_version'] ?? 0) === Profile::VERSION) {
-            $outside = $profile['inventory']['executables_outside_path'] ?? [];
-            $outsideByName = [];
-            foreach ($outside as $entry) {
-                if (is_array($entry) && isset($entry['name'], $entry['path'])) {
-                    $outsideByName[strtolower((string) $entry['name'])][] = (string) $entry['path'];
-                }
-            }
-            foreach ($analysis['commands'] as $command => $detail) {
-                if ($detail['status'] === 'missing' && isset($outsideByName[strtolower($command)])) {
-                    $analysis['warnings'][] = $command . ': found as a file outside PATH (' .
-                        implode(', ', array_slice($outsideByName[strtolower($command)], 0, 3)) .
-                        '). Not rewritten automatically: execution and dependencies are unverified.';
-                }
+        foreach ($analysis['commands'] as $command => $detail) {
+            if ($detail['selection_required']) {
+                $analysis['warnings'][] = $command . ': found outside PATH; review an explicit invocation path before use. No source command was rewritten.';
             }
         }
         foreach (($profile['warnings'] ?? []) as $warning) {
@@ -160,7 +151,11 @@ final class Converter
             "Before executing bundled programs, read `references/skill2work-compatibility.md`. " .
             "Only invoke commands when the current environment exposes the required executable and dependencies. " .
             "A previous runtime probe is a snapshot, not a guarantee. " .
-            "If a requirement is missing or unverified, tell the user what is unavailable and do not fabricate results. " .
+            "Found but untested is not unavailable. Review the exact invocation path, file identity, trust, permissions and required arguments in the current environment. " .
+            "After this review, a found tool may be invoked using its explicit path and a suitable bounded check of the needed operation. " .
+            "Do not automatically execute every discovered program or treat a failed test as proof all copies or operations are unavailable. " .
+            "When an invocation fails, report the path, operation, exit code or start error/timeout and relevant sanitized diagnostic details; never fabricate success. " .
+            "A passing baseline test covers only its recorded operation, not all features or the entire skill. " .
             "Do not auto-install dependencies, run privileged commands, or send local files to external services without explicit user approval.\n";
         $source['SKILL.md'] .= $guidance;
         if ($codexMapping['matches'] !== []) {
@@ -289,10 +284,12 @@ final class Converter
     private static function rewriteMarkdownCommands(string $text, array $profile, array &$rewrites): string
     {
         $map = [];
-        if (Profile::status($profile, 'python') === 'missing' && Profile::status($profile, 'python3') === 'available') {
+        if (Profile::commandEvidence($profile, 'python')['status'] === 'not_found' && Profile::status($profile, 'python3') === 'available'
+            && Profile::commandEvidence($profile, 'python3')['status'] !== 'test_failed') {
             $map['python'] = 'python3';
         }
-        if (Profile::status($profile, 'nodejs') === 'missing' && Profile::status($profile, 'node') === 'available') {
+        if (Profile::commandEvidence($profile, 'nodejs')['status'] === 'not_found' && Profile::status($profile, 'node') === 'available'
+            && Profile::commandEvidence($profile, 'node')['status'] !== 'test_failed') {
             $map['nodejs'] = 'node';
         }
         if ($map === []) {
@@ -331,12 +328,22 @@ final class Converter
             '> This assessment is not proof of ChatGPT Work support, package acceptance, successful execution, or entitlement to install Skills.',
             '> Scripts were not executed by skill2work. The profile is user-supplied and may be stale.', '',
             '## Executables', '',
-            '| Program | Snapshot | Source |', '| --- | --- | --- |',
+            '| Program | Evidence state | Source |', '| --- | --- | --- |',
         ];
         foreach ($report['commands'] as $command => $detail) {
             $lines[] = '| `' . $command . '` | ' . $detail['status'] . ' | ' . self::cell(implode(', ', $detail['sources'])) . ' |';
         }
         if (!$report['commands']) $lines[] = '| — | no detected commands | — |';
+        $lines = array_merge($lines, ['', '## Executable candidates', '',
+            '| Program | Invocation path | Location | State | Test or skip reason |', '| --- | --- | --- | --- | --- |']);
+        foreach ($report['commands'] as $command => $detail) {
+            foreach ($detail['candidates'] as $candidate) {
+                $lines[] = '| ' . self::cell($command) . ' | ' . self::cell($candidate['invocation_path'] ??
+                    ('unrecorded; display: ' . ($candidate['path'] ?? 'unknown'))) . ' | ' .
+                    ($candidate['in_path'] ? 'PATH' : 'outside PATH') . ' | ' . $candidate['state'] . ' | ' . self::cell($candidate['reason']) . ' |';
+            }
+        }
+
         $lines = array_merge($lines, ['', '## Python imports', '', '| Module | Snapshot | Source |', '| --- | --- | --- |']);
         foreach ($report['modules'] as $module => $detail) {
             $lines[] = '| `' . $module . '` | ' . $detail['status'] . ' | ' . self::cell(implode(', ', $detail['sources'])) . ' |';
@@ -355,7 +362,7 @@ final class Converter
         $lines[] = '## Operational rules';
         $lines[] = '';
         $lines[] = '- Never assume `available` guarantees correct versions, package health, filesystem permissions, network access, or successful execution.';
-        $lines[] = '- With v2 and complete PATH coverage, `missing` means not invocable by bare command name via that PATH; it is not a permanent platform restriction.';
+        $lines[] = '- `not_found` means no candidate in the supplied inventory with negative PATH evidence; it does not prove absence from unscanned locations. `found_untested` permits a reviewed invocation, not automatic execution.';
         $lines[] = '- `unknown` means no evidence. Test in the actual Work session before use.';
         $lines[] = '- Python imports from requirements may need manual package-name-to-module mapping.';
         $lines[] = '- Review all scripts from untrusted origins before execution.';

@@ -1,4 +1,4 @@
-# skill2work 1.5
+# skill2work 1.6
 
 Inspect Codex/Agent Skills ZIP archives, compare their requirements with an observed ChatGPT Work runtime, and export individual skill ZIPs with compatibility reports.
 
@@ -70,12 +70,22 @@ A shared engine manages process startup, a temporary working directory, a reduce
 
 | Evidence | Meaning |
 | --- | --- |
-| `available` in inventory | Found according to that inventory method |
+| `not_found` | No candidate in the supplied inventory, with negative PATH evidence; unscanned locations may still contain it |
+| `found_untested` | A candidate was found, but no matching baseline test passed or failed |
+| `tested` | The baseline test for this exact executable passed; only its recorded operation is covered |
+| `test_failed` | A test of this executable failed to start, exited unsuccessfully, mismatched output or timed out |
+| `unknown` | Insufficient inventory evidence, not proof of absence |
 | `passed` | The recorded test started and produced the expected result |
 | `failed` | The process failed or its output did not match |
 | `start_failed` | The test process could not start |
 | `timeout` | The test exceeded its budget |
 | `not_tested` | No execution evidence, for example no trusted runtime or exhausted budget |
+
+Every candidate has a concrete `invocation_path` and `resolved_path` in new profiles, a test state, and a test/skip reason. This includes off-PATH files and alternative copies sharing a name. Display paths may be redacted, but invocation/test paths are intentionally exact and can contain usernames or project names. Keep profiles private as appropriate. Old redacted profiles remain readable; unavailable exact paths are shown as unrecorded rather than guessed.
+
+Tests are matched by exact executable path, not just program name. A test of one Node installation does not validate another. A failed PATH-selected binary remains failed even if an alternative exists; review and select that alternative explicitly. Off-PATH untested candidates yield an unverified assessment, not an incompatible one. The converter does not silently rewrite source calls to arbitrary filesystem paths. Explicit absolute-path shell commands are matched against recorded paths; unscanned paths remain unknown.
+
+Converted skills may invoke found tools after checking identity, trust, permissions, arguments and the needed operation in the current session. This is not authorization to blindly test all discovered binaries. On failure, report the executable, operation, exit code/start error/timeout and sanitized diagnostics. Probe results record structured failure reasons, exit codes and startup error types/errno; arbitrary stdout/stderr is not exported. An unavailable reviewed adapter or exhausted budget leaves a found tool untested.
 
 Additional Python/Node imports are performed only when explicitly requested. Importing a package executes its code; this process isolation is **not a security sandbox**. A successful import proves loading, not every library operation. Project-local search paths may differ from the temporary test environment. Review unfamiliar packages before requesting import checks.
 
@@ -119,12 +129,12 @@ See [`docs/architecture.md`](docs/architecture.md) for implementation details an
 | Status | Interpretation |
 | --- | --- |
 | `instructions-only` | No relevant program execution detected; indirect calls may be missed |
-| `observed` | Detected requirements were found in the supplied profile; functionality is not guaranteed |
+| `observed` | Detected command baselines passed where required and other requirements were found; full skill functionality is not guaranteed |
 | `unverified` | Evidence is missing, stale or incomplete, or requirements need review |
 | `incompatible` | At least one detected dependency is missing from the profile |
 | `review` | Static security findings need manual review |
 
-With complete PATH coverage, `missing` means unavailable by bare command name via that PATH. Off-PATH files are reported separately and never treated as an automatic replacement. Package versions, all dependency graphs, network permissions and every possible operation are not verified. Filesystem discovery cannot enumerate all Work agent tools or cloud plugins; `coverage.agent_tools_complete` remains false.
+With complete PATH coverage, `missing` means unavailable by bare command name via that PATH. Off-PATH files count as found candidates and are reported with invocation paths; they are never treated as automatic replacements. Package versions, all dependency graphs, network permissions and every possible operation are not verified. Filesystem discovery cannot enumerate all Work agent tools or cloud plugins; `coverage.agent_tools_complete` remains false.
 
 ## Deployment and limits
 
