@@ -1,0 +1,4 @@
+interface:
+  display_name: "skill2work Runtime Probe"
+  short_description: "Inspect the Work runtime and export JSON"
+  default_prompt: "Run the skill2work runtime probe. Execute the bundled Python script in my actual Work environment and provide the resulting skill2work-runtime.json. If script execution is unavailable, say so explicitly and do not invent data."
