@@ -138,7 +138,7 @@ With complete PATH coverage, `missing` means unavailable by bare command name vi
 
 ## Deployment and limits
 
-Serve **only `public/`**. For remote use, configure both `SKILL2WORK_HTTP_USER` and `SKILL2WORK_HTTP_PASSWORD` in the server environment and use HTTPS. Without both settings, only requests whose remote address is localhost are accepted. Configure authentication at a reverse proxy too: a localhost proxy can otherwise make external traffic appear local. Configure PHP's HTTPS/session handling correctly behind your proxy.
+Serve **only `public/`** over HTTPS. Leave both `SKILL2WORK_HTTP_USER` and `SKILL2WORK_HTTP_PASSWORD` unset for public access. To use Apache directory protection, configure it in the hosting panel or via `.htaccess` and leave both application settings unset. For application-managed HTTP Basic authentication, set both variables and configure the web server to pass Basic credentials to PHP. A partially configured credential pair returns HTTP 503. Upgrading an installation that previously relied on the localhost restriction makes it accessible remotely unless credentials or web-server access rules are configured.
 
 For large profiles, an example PHP configuration is:
 

@@ -21,7 +21,13 @@ umask(0077);
 
 $access_user = getenv('SKILL2WORK_HTTP_USER');
 $access_password = getenv('SKILL2WORK_HTTP_PASSWORD');
-if (is_string($access_user) && $access_user !== '' && is_string($access_password) && $access_password !== '') {
+$has_user = is_string($access_user) && $access_user !== '';
+$has_password = is_string($access_password) && $access_password !== '';
+if ($has_user !== $has_password) {
+    http_response_code(503);
+    exit('Incomplete HTTP authentication configuration.');
+}
+if ($has_user && $has_password) {
     $provided_user = $_SERVER['PHP_AUTH_USER'] ?? '';
     $provided_password = $_SERVER['PHP_AUTH_PW'] ?? '';
     if (!hash_equals($access_user, $provided_user) || !hash_equals($access_password, $provided_password)) {
@@ -29,9 +35,6 @@ if (is_string($access_user) && $access_user !== '' && is_string($access_password
         http_response_code(401);
         exit('Authentication required.');
     }
-} elseif (!in_array($_SERVER['REMOTE_ADDR'] ?? '', ['127.0.0.1', '::1'], true)) {
-    http_response_code(403);
-    exit('For remote access, configure SKILL2WORK_HTTP_USER and SKILL2WORK_HTTP_PASSWORD (and HTTPS).');
 }
 
 session_name('skill2work_session');
